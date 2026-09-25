@@ -53,6 +53,54 @@ on:
           - "standard"
           - "extended"
 
+      docker:
+        description: "Docker Container Support"
+        required: true
+        type: boolean
+        default: false
+
+      docker_net:
+        description: "Docker advanced networking (bridge/nftables/IPVS). Off = core only"
+        required: false
+        type: boolean
+        default: true
+
+      docker_cgroup:
+        description: "Docker cgroup master switch (gates core/opt sub-fragments)"
+        required: false
+        type: boolean
+        default: true
+
+      docker_cgroup_core:
+        description: "Docker cgroup essentials (CFS_BANDWIDTH/FAIR_GROUP_SCHED) - cpu quota"
+        required: false
+        type: boolean
+        default: true
+
+      docker_userns:
+        description: "Docker USER_NS (rootless / userns-remap). Bootloop suspect"
+        required: false
+        type: boolean
+        default: true
+
+      docker_cgroup_opt:
+        description: "Docker cgroup optional/legacy (PERF/HUGETLB/NET_CLS/NETCLASSID)"
+        required: false
+        type: boolean
+        default: true
+
+      docker_fs:
+        description: "Docker btrfs storage driver support"
+        required: false
+        type: boolean
+        default: true
+
+      vm:
+        description: "Virtual Machine (KVM) Support"
+        required: true
+        type: boolean
+        default: false
+
       kernel_name:
         description: "Custom Kernel Name"
         required: false
@@ -80,6 +128,14 @@ jobs:
       netfilter: ${{ inputs.netfilter }}
       ccm: ${{ inputs.ccm }}
       droidspaces: ${{ inputs.droidspaces }}
+      docker: ${{ inputs.docker }}
+      docker_net: ${{ inputs.docker_net }}
+      docker_cgroup: ${{ inputs.docker_cgroup }}
+      docker_cgroup_core: ${{ inputs.docker_cgroup_core }}
+      docker_userns: ${{ inputs.docker_userns }}
+      docker_cgroup_opt: ${{ inputs.docker_cgroup_opt }}
+      docker_fs: ${{ inputs.docker_fs }}
+      vm: ${{ inputs.vm }}
       kernel_name: ${{ inputs.kernel_name }}
       create_release: ${{ inputs.create_release }}
     secrets: inherit
