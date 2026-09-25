@@ -16,6 +16,16 @@ on:
           - "none"
           - "standard"
           - "extended"
+      docker:
+        description: "Docker Container Support"
+        required: true
+        type: boolean
+        default: false
+      vm:
+        description: "Virtual Machine (KVM) Support"
+        required: true
+        type: boolean
+        default: false
       release_version:
         description: "Release version (leave empty to use date)"
         required: false
@@ -122,6 +132,23 @@ jobs:
           echo "CONFIG_DRM_LINDROID_EVDI=y" >> arch/arm64/configs/gki_defconfig
           
           patch -p1 -F 3 < ../patch/evdi_drm.patch || true
+
+      - name: Apply Docker support
+        if: inputs.docker
+        run: |
+          cd sm8650
+
+          echo ">>> 正在启用 Docker 容器支持..."
+          cat ../patch/docker.config >> arch/arm64/configs/gki_defconfig
+          patch -p1 -F 3 < ../patch/fix_cgroup.patch || true
+
+      - name: Apply Virtual Machine (KVM) support
+        if: inputs.vm
+        run: |
+          cd sm8650
+
+          echo ">>> 正在启用虚拟机 (KVM) 支持..."
+          cat ../patch/vm.config >> arch/arm64/configs/gki_defconfig
 
       - name: Fix extract-cert key_pass compatibility
         if: matrix.rom_source != 'YAAP-16'
@@ -371,6 +398,13 @@ jobs:
             ZIP_PREFIX="${ZIP_PREFIX}-dss"
           elif [[ "${{ inputs.droidspaces }}" == "extended" ]]; then
             ZIP_PREFIX="${ZIP_PREFIX}-dss-ext"
+          fi
+          
+          if [[ "${{ inputs.docker }}" == "true" ]]; then
+            ZIP_PREFIX="${ZIP_PREFIX}-docker"
+          fi
+          if [[ "${{ inputs.vm }}" == "true" ]]; then
+            ZIP_PREFIX="${ZIP_PREFIX}-vm"
           fi
           
           ZIP_NAME="${{ matrix.rom_source }}-${ZIP_PREFIX}-Floran-$(date -u +"%m%d")"

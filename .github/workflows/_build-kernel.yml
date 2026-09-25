@@ -33,6 +33,16 @@ on:
         required: true
         type: string
 
+      docker:
+        description: "Docker Container Support"
+        required: true
+        type: boolean
+
+      vm:
+        description: "Virtual Machine (KVM) Support"
+        required: true
+        type: boolean
+
       kernel_name:
         description: "Custom Kernel Name"
         required: false
@@ -156,6 +166,25 @@ jobs:
 
           # 应用 EVDI DRM 补丁
           patch -p1 -F 3 < ../patch/evdi_drm.patch || true
+
+      - name: Apply Docker support
+        if: inputs.docker
+        run: |
+          cd sm8650
+
+          echo ">>> 正在启用 Docker 容器支持..."
+          # 追加 Docker 所需的内核配置到 gki_defconfig
+          cat ../patch/docker.config >> arch/arm64/configs/gki_defconfig
+          # 启用 cgroup v2 容器兼容（无前缀 cgroup 文件链接）
+          patch -p1 -F 3 < ../patch/fix_cgroup.patch || true
+
+      - name: Apply Virtual Machine (KVM) support
+        if: inputs.vm
+        run: |
+          cd sm8650
+
+          echo ">>> 正在启用虚拟机 (KVM) 支持..."
+          cat ../patch/vm.config >> arch/arm64/configs/gki_defconfig
 
       - name: Fix extract-cert key_pass compatibility
         if: inputs.rom_source != 'YAAP-16'
@@ -444,6 +473,14 @@ jobs:
             ZIP_PREFIX="${ZIP_PREFIX}-dss-ext"
           fi
 
+          # 添加 Docker / VM 标记
+          if [[ "${{ inputs.docker }}" == "true" ]]; then
+            ZIP_PREFIX="${ZIP_PREFIX}-docker"
+          fi
+          if [[ "${{ inputs.vm }}" == "true" ]]; then
+            ZIP_PREFIX="${ZIP_PREFIX}-vm"
+          fi
+
           ZIP_NAME="${{ inputs.rom_source }}-${ZIP_PREFIX}-$(date -u +"%m%d")"
           git clone --depth=1 https://github.com/AkiHaza/AnyKernel3.git
           cp sm8650/out/arch/arm64/boot/Image AnyKernel3/Image
@@ -532,6 +569,8 @@ jobs:
             | Clang | [${{ env.CLANG_VERSION }}](${{ env.CLANG_URL }}) |
             | KernelSU | ${{ env.KSU_TYPENAME }} |
             | Droidspaces | ${{ inputs.droidspaces }} |
+            | Docker | ${{ inputs.docker }} |
+            | VM (KVM) | ${{ inputs.vm }} |
             | Built at | ${{ env.TIME_FORM }} |
 
             **Manager downloads:**
