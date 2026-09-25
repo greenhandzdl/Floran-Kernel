@@ -33,6 +33,52 @@ on:
         required: true
         type: string
 
+      docker:
+        description: "Docker Container Support"
+        required: true
+        type: boolean
+
+      docker_net:
+        description: "Docker advanced networking (bridge/nftables/IPVS/SCTP/XFRM). Off = core only for bootloop bisect"
+        required: false
+        type: boolean
+        default: true
+
+      docker_cgroup:
+        description: "Docker cgroup master switch (gates the two sub-fragments below)"
+        required: false
+        type: boolean
+        default: true
+
+      docker_cgroup_core:
+        description: "Docker CFS_BANDWIDTH (cpu quota). CONFIRMED bootloop on sm8650 - keep off"
+        required: false
+        type: boolean
+        default: false
+
+      docker_userns:
+        description: "Docker USER_NS (rootless / userns-remap). Bootloop suspect"
+        required: false
+        type: boolean
+        default: true
+
+      docker_cgroup_opt:
+        description: "Docker cgroup optional/legacy (PERF/HUGETLB/NET_CLS/NETCLASSID). CONFIRMED bootloop - keep off"
+        required: false
+        type: boolean
+        default: false
+
+      docker_fs:
+        description: "Docker btrfs storage driver support"
+        required: false
+        type: boolean
+        default: true
+
+      vm:
+        description: "Virtual Machine (KVM) Support"
+        required: true
+        type: boolean
+
       kernel_name:
         description: "Custom Kernel Name"
         required: false
@@ -111,8 +157,16 @@ jobs:
         if: inputs.lz4_enable && inputs.rom_source != 'YAAP-16' && inputs.rom_source != 'YAAP-17'
         run: |
           cd sm8650
-          cp ../patch/lz4opt.S lib/
-          git apply -p1 < ../patch/lz4.patch || true
+          # lz4.patch 是基于特定源码树（含 fs/f2fs/lz4armv8/）重构的，部分 ROM
+          # （如 crDroid）f2fs 结构不同会导致整体 apply 失败。
+          # 先做 --check，不兼容时干净跳过（保留 GKI 原生 LZ4），避免残留孤立文件。
+          if git apply --check -p1 < ../patch/lz4.patch 2>/dev/null; then
+            cp ../patch/lz4opt.S lib/
+            git apply -p1 < ../patch/lz4.patch
+            echo "LZ4 1.10.0 patch applied."
+          else
+            echo "LZ4 patch not compatible with ${{ inputs.rom_source }} source; skipping (stock GKI LZ4 retained)."
+          fi
 
       - name: Apply Droidspaces patches
         if: inputs.droidspaces != 'none' && inputs.rom_source != 'YAAP-16' && inputs.rom_source != 'YAAP-17'
@@ -156,6 +210,75 @@ jobs:
 
           # 应用 EVDI DRM 补丁
           patch -p1 -F 3 < ../patch/evdi_drm.patch || true
+
+      - name: Apply Docker support
+        if: inputs.docker
+        run: |
+          cd sm8650
+
+          echo ">>> 正在启用 Docker 容器支持..."
+          # 追加 Docker 核心组（namespace / cgroup 控制器 / overlay & 存储）到 gki_defconfig
+          cat ../patch/docker.config >> arch/arm64/configs/gki_defconfig
+          # 网络组（bridge / nftables / iptables / IPVS / SCTP / XFRM）单独由 docker_net 控制。
+          # 这些项改写 struct net / sk_buff 布局，是最可能触发 Qualcomm 数据面模块错乱、
+          # 卡第一屏的一组，排查 bootloop 时可关掉，仅用 --network=host 跑容器。
+          if [[ "${{ inputs.docker_net }}" == "true" ]]; then
+            echo ">>> 追加 Docker 网络组 (docker-net.config)..."
+            cat ../patch/docker-net.config >> arch/arm64/configs/gki_defconfig
+          else
+            echo ">>> 跳过 Docker 网络组（仅核心组，--network=host 隔离 bootloop）"
+          fi
+          # cgroup 簇拆成子片段，各自受开关控制（均在 docker_cgroup 主开关下）：
+          #   docker-cgroup.config     -> CFS_BANDWIDTH+FAIR_GROUP_SCHED(cpu 配额)，由 docker_cgroup_core 控制
+          #   docker-userns.config     -> USER_NS(rootless/命名空间)，由 docker_userns 控制
+          #   docker-cgroup-opt.config -> 可选/遗留项(PERF/HUGETLB/NET_CLS/NETCLASSID)，由 docker_cgroup_opt 控制
+          if [[ "${{ inputs.docker_cgroup }}" == "true" ]]; then
+            if [[ "${{ inputs.docker_cgroup_core }}" == "true" ]]; then
+              echo ">>> 追加 Docker cgroup 核心必需项 (docker-cgroup.config)..."
+              cat ../patch/docker-cgroup.config >> arch/arm64/configs/gki_defconfig
+            else
+              echo ">>> 跳过 Docker cgroup 核心必需项（二分 bootloop）"
+            fi
+            if [[ "${{ inputs.docker_userns }}" == "true" ]]; then
+              echo ">>> 追加 Docker USER_NS (docker-userns.config)..."
+              cat ../patch/docker-userns.config >> arch/arm64/configs/gki_defconfig
+            else
+              echo ">>> 跳过 Docker USER_NS（二分 bootloop）"
+            fi
+            if [[ "${{ inputs.docker_cgroup_opt }}" == "true" ]]; then
+              echo ">>> 追加 Docker cgroup 可选/遗留项 (docker-cgroup-opt.config)..."
+              cat ../patch/docker-cgroup-opt.config >> arch/arm64/configs/gki_defconfig
+            else
+              echo ">>> 跳过 Docker cgroup 可选/遗留项（二分 bootloop）"
+            fi
+          else
+            echo ">>> 跳过 Docker cgroup 全部控制器簇（二分 bootloop）"
+          fi
+          # btrfs 存储驱动由 docker_fs 控制
+          if [[ "${{ inputs.docker_fs }}" == "true" ]]; then
+            echo ">>> 追加 Docker btrfs 支持 (docker-fs.config)..."
+            cat ../patch/docker-fs.config >> arch/arm64/configs/gki_defconfig
+          else
+            echo ">>> 跳过 Docker btrfs 支持（二分 bootloop）"
+          fi
+          # fix_cgroup.patch 会改写 cgroup 源码的挂载/链接行为（Droidspaces/LXC 专用），
+          # 与安卓用户态默认 cgroup v1 假设冲突，曾导致 init 早期分组失败卡第一屏。
+          # 因此仅在启用 Droidspaces 时才套这个源码补丁；纯 Docker 走 docker.config 的
+          # cgroup 控制器 =y 即可，由 docker/runc 自行处理 cgroup v2 unified 层级。
+          if [[ "${{ inputs.droidspaces }}" != "none" ]]; then
+            echo ">>> Droidspaces 已启用，应用 fix_cgroup.patch..."
+            patch -p1 -F 3 < ../patch/fix_cgroup.patch || true
+          else
+            echo ">>> Droidspaces 未启用，跳过 fix_cgroup.patch（隔离 cgroup 源码改动）"
+          fi
+
+      - name: Apply Virtual Machine (KVM) support
+        if: inputs.vm
+        run: |
+          cd sm8650
+
+          echo ">>> 正在启用虚拟机 (KVM) 支持..."
+          cat ../patch/vm.config >> arch/arm64/configs/gki_defconfig
 
       - name: Fix extract-cert key_pass compatibility
         if: inputs.rom_source != 'YAAP-16'
@@ -444,6 +567,14 @@ jobs:
             ZIP_PREFIX="${ZIP_PREFIX}-dss-ext"
           fi
 
+          # 添加 Docker / VM 标记
+          if [[ "${{ inputs.docker }}" == "true" ]]; then
+            ZIP_PREFIX="${ZIP_PREFIX}-docker"
+          fi
+          if [[ "${{ inputs.vm }}" == "true" ]]; then
+            ZIP_PREFIX="${ZIP_PREFIX}-vm"
+          fi
+
           ZIP_NAME="${{ inputs.rom_source }}-${ZIP_PREFIX}-$(date -u +"%m%d")"
           git clone --depth=1 https://github.com/AkiHaza/AnyKernel3.git
           cp sm8650/out/arch/arm64/boot/Image AnyKernel3/Image
@@ -532,6 +663,8 @@ jobs:
             | Clang | [${{ env.CLANG_VERSION }}](${{ env.CLANG_URL }}) |
             | KernelSU | ${{ env.KSU_TYPENAME }} |
             | Droidspaces | ${{ inputs.droidspaces }} |
+            | Docker | ${{ inputs.docker }} |
+            | VM (KVM) | ${{ inputs.vm }} |
             | Built at | ${{ env.TIME_FORM }} |
 
             **Manager downloads:**
