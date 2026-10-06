@@ -28,6 +28,7 @@
   - IPSet 与 IPv6 NAT
   - Droidspaces 容器支持
   - Droidspaces Extended：额外启用虚拟 HCI、systemd-coredump 相关配置及 Lindroid EVDI DRM
+  - Docker 容器支持（单一开关；⚠️ 对部分机型有 bootloop 风险，详见下文）
 - 使用 AOSP Clang 编译：Android 17 工作流使用 `clang-r596125`，Android 16 与矩阵构建工作流使用 `clang-r563880c`
 - 通过 AnyKernel3 输出可刷写 ZIP
 - 支持上传 Actions Artifact，并可自动创建 GitHub Release
@@ -56,6 +57,7 @@
 | `Enable IPSET & IPv6_NAT` | 启用 IPSet、IPv6 NAT 及相关 Netfilter 配置；FrierenKernel 忽略此选项。 |
 | `Enable BBR & ECN` | 启用 BBR、ECN 与 FQ；FrierenKernel 忽略此选项。 |
 | `Droidspaces Container Support` | 选择 `none`、`standard` 或 `extended` 容器支持。YAAP 不应用 Droidspaces 补丁。 |
+| `Docker Container Support` | ⚠️ DANGER：追加 `patch/docker.config` 单一片段（namespaces/seccomp、cgroup v2、USER_NS、overlay/btrfs 等），默认关闭；可能导致部分机型 bootloop，详见下文。 |
 | `Custom Kernel Name` | 设置内核附加版本名。脚本会自动补上 `-` 前缀。 |
 | `创建 GitHub Release？` | 是否在构建成功后创建并上传 GitHub Release。 |
 
@@ -115,12 +117,51 @@ Android 17 使用的 Clang 工具链产物：[`clang-r596125.tar.gz`](https://gi
 > [!NOTE]
 > Droidspaces 补丁支持 DerpFest 等非 YAAP 源码，不会应用于 YAAP。
 
+## Docker 容器支持
+
+勾选 `Docker Container Support`（单一开关）后，构建时会把 [`patch/docker.config`](patch/docker.config)
+整体追加到 `gki_defconfig`，开启以下能力：
+
+| 分组 | 内容 |
+|---|---|
+| namespaces / seccomp | `NAMESPACES`、`UTS_NS`、`IPC_NS`、`PID_NS`、`NET_NS`、`SECCOMP(_FILTER)`、`POSIX_MQUEUE` |
+| user namespace | `USER_NS`（rootless 容器 / `--userns-remap`） |
+| cgroup v2 控制器 | `CGROUP_BPF`、`CPUACCT`、`FREEZER`、`SCHED`、`CPUSETS`、`MEMCG`、`BLK_CGROUP(_THROTTLING)`、`NET_PRIO` |
+| 存储驱动 | `OVERLAY_FS` + `TMPFS_XATTR` + ext4 ACL/xattr；`BTRFS_FS`（btrfs driver 可选） |
+| 事件/同步原语 | `KEYS`、`EPOLL`、`SIGNALFD`、`TIMERFD`、`EVENTFD`、`INET` |
+
+> [!WARNING]
+> **DANGER：该选项会改变内核行为，可能导致部分机型 bootloop。**默认关闭；仅在
+> OnePlus Ace 3 Pro（pineapple/sm8650，GKI 6.1）实机验证过可开机并完整跑通
+> Docker，其他平台未经测试。启用 Droidspaces 时还会同步套用 `fix_cgroup.patch`（纯
+> Docker 不碰源码补丁）。
+
+以下配置经 sm8650 单变量二分实测确认会 bootloop，**有意未包含**：
+
+- 网络簇 `BRIDGE`/`NF_TABLES`/`IPVS`/`SCTP`/`XFRM`：把原厂 `=m` 网络组件翻成 `=y`，破坏高通 vendor 模块 probe；
+- `CFS_BANDWIDTH`：改变调度结构体布局，vendor 模块按偏移内嵌引用错乱；
+- cgroup 可选/遗留簇 `PERF`/`HUGETLB`/`NET_CLS`/`NETCLASSID`：同类结构体扰动。
+
+使用后果：容器网络请用 `--network=host`（无 docker0/NAT/`-p` 端口映射），CPU 限制请用
+`--cpu-shares` / `cpu.weight` 代替 `--cpus`。
+
+## 关于 VM / KVM（未提供开关）
+
+[`patch/vm.config`](patch/vm.config)（arm64 KVM 宿主 + vhost/virtio/9p）保留在仓库中但
+**不接入工作流选项**：arm64 KVM 宿主要求 Linux 运行在 EL2，而高通等移动平台的 EL2 常被
+OEM monitor / pKVM 占用，即使 `CONFIG_KVM=y` 也不会注册 `/dev/kvm`（判据：
+`cat /proc/misc | grep kvm`）。确认自己设备 EL2 可用者，可在本地构建时手动追加：
+
+```bash
+cat patch/vm.config >> arch/arm64/configs/gki_defconfig
+```
+
 ## 输出文件命名
 
 单独构建的 ZIP 大致遵循：
 
 ```text
-<ROM 源码>-A<Android 版本>-<KSU 方案>[-dss|-dss-ext]-<UTC 月日>.zip
+<ROM 源码>-A<Android 版本>-<KSU 方案>[-dss|-dss-ext][-docker]-<UTC 月日>.zip
 ```
 
 其中：
@@ -128,6 +169,7 @@ Android 17 使用的 Clang 工具链产物：[`clang-r596125.tar.gz`](https://gi
 - `A16` / `A17`：对应工作流的 Android 版本；Actions Artifact 与 Release 也会显示版本，便于区分同名 ROM。
 - `dss`：Droidspaces Standard
 - `dss-ext`：Droidspaces Extended
+- `docker`：启用 Docker 容器支持
 
 ## 本地构建
 
