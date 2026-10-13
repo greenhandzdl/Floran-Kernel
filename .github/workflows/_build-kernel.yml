@@ -264,6 +264,55 @@ jobs:
               print("extract-cert.c key_pass layout is already compatible")
           PY
 
+      - name: Apply module CRC check bypass
+        run: |
+          cd sm8650
+          # vendor 分区的 .ko 是按 OnePlus 原始源码算符号 CRC 的，我们的 Image 只要与之对不上，
+          # 严格校验就会让 insmod 直接返回 EINVAL（实测 bluetooth 全家桶加载失败）。
+          # 这里把 check_version() 的 CRC 不匹配分支改成「只告警、不拒绝」，并强制校验改动真的落地，
+          # 避免再产出静默坏掉的内核。
+          if git apply --check -p1 < ../patch/disable_module_crc_check.patch 2>/dev/null; then
+            git apply -p1 < ../patch/disable_module_crc_check.patch
+            echo "Module CRC check bypassed via patch."
+          else
+            src=""
+            for f in kernel/module/version.c kernel/module.c; do
+              if grep -q "disagrees about version of symbol" "$f" 2>/dev/null; then
+                src="$f"
+                break
+              fi
+            done
+            if [[ -z "$src" ]]; then
+              echo "::error::未找到 check_version() 的 CRC 校验点"
+              exit 1
+            fi
+            awk 'BEGIN { done = 0 }
+                 !done && /disagrees about version of symbol/ { hit = NR }
+                 hit && NR <= hit + 6 && /^[[:space:]]*return 0;[[:space:]]*$/ {
+                   sub(/return 0;/, "return 1; /* symbol CRC mismatch tolerated */")
+                   done = 1
+                 }
+                 { print }
+                 END { exit !done }' "$src" > "$src.new" || {
+              echo "::error::$src 的 CRC 校验点改写失败"
+              rm -f "$src.new"
+              exit 1
+            }
+            mv "$src.new" "$src"
+            echo "Module CRC check bypassed in $src."
+          fi
+          verified=""
+          for f in kernel/module/version.c kernel/module.c; do
+            if [[ -f "$f" ]] && grep -A6 "disagrees about version of symbol" "$f" | grep "return 1;" >/dev/null; then
+              verified="$f"
+            fi
+          done
+          if [[ -z "$verified" ]]; then
+            echo "::error::CRC 校验未被放行，中止构建"
+            exit 1
+          fi
+          echo "CRC mismatch is tolerated in $verified."
+
       - name: Compile Kernel
         run: |
           if [[ "${{ inputs.android_version }}" == "17" ]]; then

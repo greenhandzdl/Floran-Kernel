@@ -1,0 +1,23 @@
+# Build artifacts
+AnyKernel/
+*.zip
+
+# Diagnostic and migration scripts
+log/
+
+# Backups
+restore/
+
+# Blog drafts
+blog/
+
+# Reports
+FINAL_REPORT.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
